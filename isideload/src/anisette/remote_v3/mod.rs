@@ -297,6 +297,7 @@ impl RemoteV3AnisetteProvider {
                             &start_provisioning,
                             &body,
                             Some(Self::provisioning_headers(state).await?),
+                            false,
                         )
                         .await
                         .context("Failed to send start provisioning request")?;
@@ -329,6 +330,7 @@ impl RemoteV3AnisetteProvider {
                             &end_provisioning,
                             &body,
                             Some(Self::provisioning_headers(state).await?),
+                            false,
                         )
                         .await
                         .context("Failed to send end provisioning request")?;
