@@ -88,6 +88,24 @@ impl GrandSlam {
         Ok(builder)
     }
 
+    pub fn put_sms(&self, url: &str) -> Result<reqwest::RequestBuilder, Report> {
+        let builder = self
+            .client
+            .put(url)
+            .headers(Self::base_headers(&self.client_info, true)?);
+
+        Ok(builder)
+    }
+
+    pub fn post_sms(&self, url: &str) -> Result<reqwest::RequestBuilder, Report> {
+        let builder = self
+            .client
+            .post(url)
+            .headers(Self::base_headers(&self.client_info, true)?);
+
+        Ok(builder)
+    }
+
     pub fn post(&self, url: &str) -> Result<reqwest::RequestBuilder, Report> {
         let builder = self
             .client
@@ -149,6 +167,9 @@ impl GrandSlam {
         if !sms {
             headers.insert("Content-Type", HeaderValue::from_static("text/x-xml-plist"));
             headers.insert("Accept", HeaderValue::from_static("text/x-xml-plist"));
+        } else {
+            headers.insert("Content-Type", HeaderValue::from_static("application/json"));
+            headers.insert("Accept", HeaderValue::from_static("application/json"));
         }
         headers.insert(
             "X-Mme-Client-Info",
