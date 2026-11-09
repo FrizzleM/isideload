@@ -116,13 +116,45 @@ impl AnisetteData {
 
 #[async_trait::async_trait]
 pub trait AnisetteProvider {
+    /// Fails with `SideloadError::AnisetteNotProvisioned` when the server says
+    /// the identity in use isn't provisioned with it (ADI error -45061).
     async fn get_anisette_data(&self) -> Result<AnisetteData, Report>;
 
-    async fn get_client_info(&mut self) -> Result<AnisetteClientInfo, Report>;
+    /// Anisette data made after applying the resync data (`sim`, base64)
+    /// GrandSlam sent with an hsc 434.
+    async fn resync(&self, _sim: &str) -> Result<AnisetteData, Report> {
+        Err(report!("This anisette provider can't resync"))
+    }
 
-    async fn provision(&mut self, gs: Arc<GrandSlam>) -> Result<(), Report>;
+    async fn get_client_info(&self) -> Result<AnisetteClientInfo, Report>;
+
+    /// Whether the server makes its anisette data with Apple's Android ADI
+    /// library (`remote_v3::android_adi`), once its client info has been
+    /// asked for.
+    fn runs_android_adi(&self) -> bool {
+        false
+    }
+
+    /// From now on, only picks an identity provisioned as the client it
+    /// reports when that is a current Mac (`remote_v3`'s `Slots::fits`). For a
+    /// full sign-in; a saved token stays with the identity it was issued to.
+    fn require_current_mac_identity(&mut self) {}
+
+    /// Picks the identity to use, provisioning one if needed. `rejected` says
+    /// the server has just refused the identity in use as not provisioned.
+    async fn provision(&mut self, gs: Arc<GrandSlam>, rejected: bool) -> Result<(), Report>;
 
     fn needs_provisioning(&self) -> Result<bool, Report>;
+}
+
+/// True if `report` is, or was caused by, `SideloadError::AnisetteNotProvisioned`.
+pub fn is_not_provisioned(report: &Report) -> bool {
+    report.iter_reports().any(|cause| {
+        matches!(
+            cause.downcast_current_context::<crate::SideloadError>(),
+            Some(crate::SideloadError::AnisetteNotProvisioned)
+        )
+    })
 }
 
 #[derive(Clone)]
@@ -149,30 +181,59 @@ impl AnisetteDataGenerator {
             return Ok(data.clone());
         }
 
-        // trying to avoid locking as write unless necessary to promote concurrency
-        let provider = self.provider.read().await;
-
-        if provider.needs_provisioning()? {
-            drop(provider);
-            let mut provider_write = self.provider.write().await;
-            provider_write.provision(gs).await?;
-            drop(provider_write);
+        // An identity the server refuses as not provisioned (one made on
+        // another ADI library, or one the server lost) gets one more pick.
+        let mut rejected = false;
+        for _ in 0..2 {
+            // trying to avoid locking as write unless necessary to promote concurrency
+            let provider = self.provider.read().await;
+            if rejected || provider.needs_provisioning()? {
+                drop(provider);
+                let mut provider_write = self.provider.write().await;
+                provider_write.provision(gs.clone(), rejected).await?;
+            }
 
             let provider = self.provider.read().await;
-            let data = provider.get_anisette_data().await?;
-            let arc_data = Arc::new(data);
-            self.data = Some(arc_data.clone());
-            Ok(arc_data)
-        } else {
-            let data = provider.get_anisette_data().await?;
-            let arc_data = Arc::new(data);
-            self.data = Some(arc_data.clone());
-            Ok(arc_data)
+            match provider.get_anisette_data().await {
+                Ok(data) => {
+                    let arc_data = Arc::new(data);
+                    self.data = Some(arc_data.clone());
+                    return Ok(arc_data);
+                }
+                Err(e) if !rejected && is_not_provisioned(&e) => {
+                    warn!("The anisette server says this identity isn't provisioned with it");
+                    rejected = true;
+                }
+                Err(e) => return Err(e),
+            }
         }
+        unreachable!("the second pass returns")
+    }
+
+    /// Resyncs with `sim` (see `AnisetteProvider::resync`) and replaces the
+    /// cached data with what comes back.
+    pub async fn resync(&mut self, sim: &str) -> Result<Arc<AnisetteData>, Report> {
+        let provider = self.provider.read().await;
+        let data = Arc::new(provider.resync(sim).await?);
+        self.data = Some(data.clone());
+        Ok(data)
     }
 
     pub async fn get_client_info(&self) -> Result<AnisetteClientInfo, Report> {
-        let mut provider = self.provider.write().await;
+        let provider = self.provider.read().await;
         provider.get_client_info().await
+    }
+
+    /// See `AnisetteProvider::runs_android_adi`.
+    pub async fn runs_android_adi(&self) -> bool {
+        self.provider.read().await.runs_android_adi()
+    }
+
+    /// See `AnisetteProvider::require_current_mac_identity`. Drops this
+    /// generator's cached data, which may come from an identity that no longer
+    /// fits.
+    pub async fn require_current_mac_identity(&mut self) {
+        self.provider.write().await.require_current_mac_identity();
+        self.data = None;
     }
 }

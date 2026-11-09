@@ -290,11 +290,11 @@ mod services_request_tests {
             Ok(AnisetteData::for_tests())
         }
 
-        async fn get_client_info(&mut self) -> Result<AnisetteClientInfo, Report> {
+        async fn get_client_info(&self) -> Result<AnisetteClientInfo, Report> {
             unreachable!()
         }
 
-        async fn provision(&mut self, _gs: Arc<GrandSlam>) -> Result<(), Report> {
+        async fn provision(&mut self, _gs: Arc<GrandSlam>, _rejected: bool) -> Result<(), Report> {
             Ok(())
         }
 
